@@ -1,37 +1,61 @@
 import pandas as pd 
 import os
 import numpy as np
+import torch
 from tqdm import tqdm
-from sklearn.model_selection import KFold
 from torch.optim import Adam
-import torch.nn.functional as F
 
 import json 
-import torch
-import torch.nn as nn
+
 from sklearn.preprocessing import StandardScaler
 
-from utils import  uplift_score, make_outcome_feature,binary_treatment_loss, outcome_regression_loss
+from models import UserMP, BipartiteSAGE2mod
+from utils import uplift_score, make_outcome_feature, cluster, mc_dropout, outcome_regression_loss, al_lp
+
+import sys
 import random
 
 
-from models import BipartiteSAGE2mod, UserMP
 
 
 
-
-def run_tgnn(outcome, treatment, criterion,xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers, k, run,
-              model_file, num_users, num_products, with_lp, alpha, l2_reg, dropout, lr, num_epochs, early_thres,repr_balance, device, validation_fraction=5):
+def run_umgnn_al(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers, budget_iter, run, model_file, num_users, num_products, with_lp, alpha, l2_reg, dropout, lr, num_epochs, early_thres,repr_balance, device,active_policy, degree, a1, a2, a3, epsilon, validation_fraction=5 ):
+    """
+    Run the AL algorithm defined in the paper based on the TGNN model.
+    """
     #------ K fold split
-    kf = KFold(n_splits=abs(k), shuffle=True, random_state=run)
-    result_fold = []
+    train_indices = []
+    test_indices = np.arange(xu.shape[0])
+    pred_uncertainty = []  
+
+    step = int(budget_iter/5)
+    sample_budget = int(step*len(test_indices)/100)
+
+    cluster_assigment , cluster_budget, cluster_distance = cluster(xu.cpu().numpy(), sample_budget)
+
     if with_lp:   
         dummy_product_labels = torch.zeros([num_products,1]).to(device).squeeze()
 
 
-    for train_indices, test_indices in kf.split(xu):
-        test_indices, train_indices = train_indices, test_indices
 
+    result_iter = []
+    for iter in range(0,budget_iter,step):
+        # take a random subset of xu without usiing k fold 
+
+        # in egreedy, we take a random sample with prob epsilon
+        if (active_policy == 'egreedy') and (random.random()<=epsilon):
+            # random
+            new_train_indices = np.random.choice(test_indices, sample_budget, replace=False)
+            test_indices = np.array([i for i in test_indices if i not in new_train_indices])
+            train_indices += new_train_indices.tolist()
+        else:
+            # objective
+            new_train_indices = al_lp(test_indices, degree, pred_uncertainty, cluster_distance, cluster_assigment , cluster_budget.copy(), treatment.cpu().numpy(), sample_budget ,a1, a2, a3)
+            # remove the new train indices from the test indices
+            test_indices = np.array([i for i in test_indices if i not in new_train_indices])
+            train_indices += new_train_indices
+
+            
         # split the test indices to test and validation 
         val_indices = train_indices[:int(len(train_indices)/validation_fraction)]
         subtrain_indices = train_indices[int(len(train_indices)/validation_fraction):]
@@ -78,15 +102,14 @@ def run_tgnn(outcome, treatment, criterion,xu, xp, edge_index, edge_index_df, ta
         val_losses = []
         best_val_loss = np.inf
         early_stopping = 0
-
         for epoch in tqdm(range(num_epochs)):
             optimizer.zero_grad()
 
-            
             out_treatment, out_control, hidden_treatment, hidden_control = model(xu_, xp, edge_index_up_current)
+           
 
             loss = criterion(treatment[subtrain_indices], out_treatment[subtrain_indices],
-                        out_control[subtrain_indices], outcome[subtrain_indices])# target_labels are your binary labels
+                        out_control[subtrain_indices], outcome[subtrain_indices])  # target_labels are your binary labels
 
             #loss = criterion(out[train_indices], y[train_indices]) # target_labels are your binary labels
             loss.backward()
@@ -100,12 +123,8 @@ def run_tgnn(outcome, treatment, criterion,xu, xp, edge_index, edge_index_df, ta
                     # no dropout hence no need to rerun
                     model.eval()
                     out_treatment, out_control, hidden_treatment, hidden_control = model(xu_, xp, edge_index_up_current)
-                    
-                    if task==0:
-                        out_treatment = F.sigmoid(out_treatment)
-                        out_control = F.sigmoid(out_control)
-                        
-                    loss = criterion(treatment[val_indices],out_treatment[val_indices], out_control[val_indices], outcome[val_indices])
+                       
+                    loss = criterion(treatment[val_indices],out_treatment[val_indices], out_control[val_indices], outcome[val_indices])# + dist
 
                     val_loss = round(float(loss.item()),3)
                     val_losses.append(val_loss)
@@ -132,13 +151,12 @@ def run_tgnn(outcome, treatment, criterion,xu, xp, edge_index, edge_index_df, ta
         model = torch.load(model_file).to(device)
         model.eval()
 
+        if active_policy != "random":
+            mean, variance, entropy = mc_dropout(model,xu_, xp, edge_index_up_current, test_indices)
+            pred_uncertainty = variance
+                
         out_treatment, out_control, hidden_treatment, hidden_control = model(xu_, xp, edge_index_up_current)
 
-        if task==0:
-            out_treatment = F.sigmoid(out_treatment)
-            out_control = F.sigmoid(out_control)
-        
-        
         #------------------------ Evaluating
         treatment_test = treatment[test_indices].detach().cpu().numpy()
         outcome_test = outcome[test_indices].detach().cpu().numpy()
@@ -155,26 +173,28 @@ def run_tgnn(outcome, treatment, criterion,xu, xp, edge_index, edge_index_df, ta
         up20 = uplift_score(uplift, treatment_test, outcome_test,0.2)
         print(f'up20 {up20}')
 
-       
+     
+        result_iter.append((up40, up20))
 
-        result_fold.append((up40, up20))
-
-    return pd.DataFrame(result_fold).mean().values
-
+    return result_iter, len(train_indices), len(test_indices)#pd.DataFrame(result_fold).mean().values
 
 
 
 
 
-def main():
+def main():  
     #----------------- Load parameters
-    with open('config_RetailHero.json', 'r') as config_file:
+    
+    with open('config_Movielens25.json', 'r') as config_file:
         config = json.load(config_file)
+
 
     path_to_data = config["path_to_data"]
     os.chdir(path_to_data)
 
-   
+
+    n_hidden = config["n_hidden"]
+
     n_hidden = config["n_hidden"]
     no_layers = config["no_layers"]
     out_channels = config["out_channels"]
@@ -187,16 +207,23 @@ def main():
     #config["with_representation_balance"]==1
     with_lp = config['with_lp'] == 1
     number_of_runs = config['number_of_runs']
-    alpha = 0.5
+    dist_alpha = 0.5
+    epsilon = 0.5
     repr_balance = False
-
+    
+    #a2 = 1-a1
+    active_policy = 'lp'
+    a1 = 0.2
+    a2 = 0.1
+    a3 = 0.7
+    
+    
     edge_index_df = pd.read_csv(config["edge_index_file"])
     features = pd.read_csv(config["user_feature_file"])
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    num_products = len(edge_index_df['product'].unique())
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     edge_index = torch.tensor(edge_index_df[['user','product']].values).type(torch.LongTensor).T.to(device)
-    
+
     columns_to_norm = ['age','first_issue_abs_time','first_redeem_abs_time','redeem_delay','degree_before','weighted_degree_before'] 
     if len(columns_to_norm)>0:
         normalized_data = StandardScaler().fit_transform(features[columns_to_norm])
@@ -209,36 +236,41 @@ def main():
     outcome_change = torch.tensor(features['avg_money_change'].values).type(torch.FloatTensor).to(device)
 
     # add always the product with the maximum index (it has only one edge) to facilitate the sparse message passing
+
     features = features.drop(['avg_money_before','avg_count_before'],axis=1)
+
+    num_products = len(edge_index_df['product'].unique())
     
-    lr = 0.01
     xp = torch.eye(num_products).to(device)
-    feats = "oldfts"
-    for k in [5, 20]:
-        for task in [1,2]:
-            features_tmp  = features[['age','F','M','U','first_issue_abs_time','first_redeem_abs_time','redeem_delay'] ]
-            print( features_tmp.columns)
-            xu = torch.tensor(features_tmp.values).type(torch.FloatTensor).to(device)
 
-            torch.cuda.empty_cache()
-            if lr==0.001:
-                dropout = 0.2
-                n_hidden = 32
-            else:
-                dropout = 0.4
-                n_hidden = 64 
+    features_tmp  = features[['age','F','M','U','first_issue_abs_time','first_redeem_abs_time','redeem_delay'] ]
+    degree = features['degree_before'].values
 
-            v = "tgnn_v4_redo_"+feats+"_"+str(lr)+"_"+str(n_hidden)+"_"+str(num_epochs)+"_"+str(dropout)+"_"+str(with_lp)+"_"+str(k)+"_"+str(task)
+    xu = torch.tensor(features_tmp.values).type(torch.FloatTensor).to(device)
 
-            model_file = model_file_name.replace("version",str(v))
-            results_file = results_file_name.replace("version",str(v))
 
-            result_version = []
-            for run in range(number_of_runs):  
-                np.random.seed(run)
+    for task in [2,1]:
+
+        torch.cuda.empty_cache()
+        if lr==0.001:
+            dropout = 0.2
+            n_hidden = 32
+        else:
+            dropout = 0.4
+            n_hidden = 64 
+
+        for budget_iter in [20,5]:    
+
+            for run in range(0,number_of_runs):  
+                run+=10
                 random.seed(run)
                 torch.manual_seed(run)
+                v = "tgnn_v4_"+str(run)+"_"+active_policy+"_"+str(budget_iter)+"_"+str(lr)+"_"+str(n_hidden)+"_"+str(num_epochs)+"_"+str(dropout)+"_"+str(with_lp)+"_"+"_"+str(task)
 
+                model_file = model_file_name.replace("version",str(v))
+                results_file = results_file_name.replace("version",str(v))
+
+                result_iter = []
                 # extract the features and the labels
                 if task == 0:
                     outcome = outcome_original
@@ -249,12 +281,16 @@ def main():
 
                 criterion = outcome_regression_loss
 
-                num_users = int(treatment.shape[0])
+                num_users = int(treatment.shape[0]) 
 
-                result_fold = run_tgnn(outcome, treatment, criterion,xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers, k, run, model_file, num_users, num_products, with_lp, alpha, l2_reg, dropout, lr, num_epochs, early_thres,repr_balance, device)
-                result_version.append(result_fold)
+                result_iter, len_train, len_test = run_umgnn_al(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers, budget_iter, run,
+                                            model_file, num_users, num_products, with_lp, dist_alpha, l2_reg,dropout, lr, num_epochs, early_thres,repr_balance, device, active_policy,
+                                            degree, a1, a2, a3, epsilon)
 
-            pd.DataFrame(result_version).to_csv(results_file,index=False)
+
+                
+                pd.DataFrame(result_iter).to_csv(results_file,index=False)
+    
 
 
 

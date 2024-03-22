@@ -22,7 +22,7 @@ from models import BipartiteSAGE2mod, UserMP
 
 
 
-def run_tgnn(outcome, treatment, criterion,xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers, k, run,
+def run_umgnn(outcome, treatment, criterion,xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers, k, run,
               model_file, num_users, num_products, with_lp, alpha, l2_reg, dropout, lr, num_epochs, early_thres,repr_balance, device, validation_fraction=5):
     #------ K fold split
     kf = KFold(n_splits=abs(k), shuffle=True, random_state=run)
@@ -247,7 +247,7 @@ def main():
 
                 num_users = int(treatment.shape[0])
 
-                result_fold = run_tgnn(outcome, treatment, criterion,xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers, k, run, model_file, num_users, num_products, with_lp, alpha, l2_reg, dropout, lr, num_epochs, early_thres,repr_balance, device)
+                result_fold = run_umgnn(outcome, treatment, criterion,xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers, k, run, model_file, num_users, num_products, with_lp, alpha, l2_reg, dropout, lr, num_epochs, early_thres,repr_balance, device)
                 result_version.append(result_fold)
 
                 pd.DataFrame(result_version).to_csv(results_file,index=False)

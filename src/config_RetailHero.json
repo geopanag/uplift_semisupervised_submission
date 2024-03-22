@@ -1,7 +1,7 @@
 {
 "dataset":"retail",
 "path_to_data":"../data/RetailHero",
-"num_epochs" : 1000,
+"num_epochs" : 2000,
 "early_stopping_threshold":100,
 "lr" : 0.01,
 "n_hidden" : 32,

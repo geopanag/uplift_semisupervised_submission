@@ -7,10 +7,12 @@ from torch.optim import Adam
 
 import json 
 
+
 from sklearn.preprocessing import StandardScaler
 
-from models import UserMP, BipartiteSAGE2mod
 from utils import uplift_score, make_outcome_feature, cluster, mc_dropout, outcome_regression_loss, al_lp
+
+from models import UserMP, BipartiteSAGE2mod
 
 import sys
 import random
@@ -18,8 +20,7 @@ import random
 
 
 
-
-def run_tgnn_al(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers, budget_iter, run, model_file, num_users, num_products, with_lp, alpha, l2_reg, dropout, lr, num_epochs, early_thres,repr_balance, device,active_policy, degree, a1, a2, a3, epsilon, validation_fraction=5 ):
+def run_umgnn_al(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers, budget_iter, run, model_file, num_users, num_products, with_lp, alpha, l2_reg, dropout, lr, num_epochs, early_thres,repr_balance, device,active_policy, degree, a1, a2, a3, epsilon, validation_fraction=5 ):
     """
     Run the AL algorithm defined in the paper based on the TGNN model.
     """
@@ -30,12 +31,12 @@ def run_tgnn_al(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df
 
     step = int(budget_iter/5)
     sample_budget = int(step*len(test_indices)/100)
+    print(f'sample budget {sample_budget}')
 
     cluster_assigment , cluster_budget, cluster_distance = cluster(xu.cpu().numpy(), sample_budget)
 
     if with_lp:   
         dummy_product_labels = torch.zeros([num_products,1]).to(device).squeeze()
-
 
 
     result_iter = []
@@ -106,10 +107,11 @@ def run_tgnn_al(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df
             optimizer.zero_grad()
 
             out_treatment, out_control, hidden_treatment, hidden_control = model(xu_, xp, edge_index_up_current)
-           
+                
+            dist = 0
 
             loss = criterion(treatment[subtrain_indices], out_treatment[subtrain_indices],
-                        out_control[subtrain_indices], outcome[subtrain_indices])  # target_labels are your binary labels
+                        out_control[subtrain_indices], outcome[subtrain_indices]) + dist # target_labels are your binary labels
 
             #loss = criterion(out[train_indices], y[train_indices]) # target_labels are your binary labels
             loss.backward()
@@ -123,7 +125,7 @@ def run_tgnn_al(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df
                     # no dropout hence no need to rerun
                     model.eval()
                     out_treatment, out_control, hidden_treatment, hidden_control = model(xu_, xp, edge_index_up_current)
-                       
+                     
                     loss = criterion(treatment[val_indices],out_treatment[val_indices], out_control[val_indices], outcome[val_indices])# + dist
 
                     val_loss = round(float(loss.item()),3)
@@ -173,7 +175,7 @@ def run_tgnn_al(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df
         up20 = uplift_score(uplift, treatment_test, outcome_test,0.2)
         print(f'up20 {up20}')
 
-     
+
         result_iter.append((up40, up20))
 
     return result_iter, len(train_indices), len(test_indices)#pd.DataFrame(result_fold).mean().values
@@ -184,16 +186,12 @@ def run_tgnn_al(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df
 
 def main():  
     #----------------- Load parameters
-    
-    with open('config_Movielens25.json', 'r') as config_file:
+    with open('config_RetailHero.json', 'r') as config_file:
         config = json.load(config_file)
-
 
     path_to_data = config["path_to_data"]
     os.chdir(path_to_data)
 
-
-    n_hidden = config["n_hidden"]
 
     n_hidden = config["n_hidden"]
     no_layers = config["no_layers"]
@@ -216,8 +214,8 @@ def main():
     a1 = 0.2
     a2 = 0.1
     a3 = 0.7
-    
-    
+        
+    fwi= open('lengths_.txt', 'a')
     edge_index_df = pd.read_csv(config["edge_index_file"])
     features = pd.read_csv(config["user_feature_file"])
 
@@ -239,18 +237,17 @@ def main():
 
     features = features.drop(['avg_money_before','avg_count_before'],axis=1)
 
-    num_products = len(edge_index_df['product'].unique())
-    
-    xp = torch.eye(num_products).to(device)
 
+    num_products = len(edge_index_df['product'].unique())
+    xp = torch.eye(num_products).to(device)
+    
     features_tmp  = features[['age','F','M','U','first_issue_abs_time','first_redeem_abs_time','redeem_delay'] ]
     degree = features['degree_before'].values
 
     xu = torch.tensor(features_tmp.values).type(torch.FloatTensor).to(device)
 
 
-    for task in [2,1]:
-
+    for task in [2,1]: 
         torch.cuda.empty_cache()
         if lr==0.001:
             dropout = 0.2
@@ -263,6 +260,7 @@ def main():
 
             for run in range(0,number_of_runs):  
                 run+=10
+                np.random.seed(run)
                 random.seed(run)
                 torch.manual_seed(run)
                 v = "tgnn_v4_"+str(run)+"_"+active_policy+"_"+str(budget_iter)+"_"+str(lr)+"_"+str(n_hidden)+"_"+str(num_epochs)+"_"+str(dropout)+"_"+str(with_lp)+"_"+"_"+str(task)
@@ -283,14 +281,14 @@ def main():
 
                 num_users = int(treatment.shape[0]) 
 
-                result_iter, len_train, len_test = run_tgnn_al(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers, budget_iter, run,
+                result_iter, len_train, len_test = run_umgnn_al(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers, budget_iter, run,
                                             model_file, num_users, num_products, with_lp, dist_alpha, l2_reg,dropout, lr, num_epochs, early_thres,repr_balance, device, active_policy,
                                             degree, a1, a2, a3, epsilon)
 
 
-                
+               
                 pd.DataFrame(result_iter).to_csv(results_file,index=False)
-    
+    fwi.close()
 
 
 

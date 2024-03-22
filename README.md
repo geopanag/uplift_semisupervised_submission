@@ -37,14 +37,14 @@ To run the experiments with the default settings and the default config (attache
 ## TGNN and DraGNN
 
 ```bash
-python tgnn.py
-python tgnn_test_models.py
-python tgnn_movielens.py
-python dragnn.py
+python umgn.py
+python umgn_test_models.py
+python umgn_movielens.py
+python umgn_dragon.py
 ```
 
 ## Active learning
 ```bash
-python al_uplift_retail.py
-python al_uplift_movielens.py
+python al_umgn_retail.py
+python al_umgn_movielens.py
 ```

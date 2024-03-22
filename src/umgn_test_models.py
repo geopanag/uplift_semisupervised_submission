@@ -129,7 +129,7 @@ def outcome_regression_loss(t_true: torch.tensor, y_treatment_pred: torch.tensor
 
 
 
-def run_tgnn(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers,
+def run_umgnn(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df, task, n_hidden, out_channels, no_layers,
              k, run, num_users, num_products, with_lp, alpha, l2_reg, dropout, lr, num_epochs, early_thres,
              repr_balance, device, model_file, model_class='SAGEConv',  model_config=None, validation_fraction=5):
     
@@ -394,7 +394,7 @@ def main():
 
                     num_users = int(treatment.shape[0])
 
-                    result_fold = run_tgnn(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df, task, n_hidden,
+                    result_fold = run_umgnn(outcome, treatment, criterion, xu, xp, edge_index, edge_index_df, task, n_hidden,
                                         out_channels, no_layers, k, run, num_users, num_products, with_lp,
                                         alpha, l2_reg, dropout, lr, num_epochs, early_thres, repr_balance, device,model_file, 
                                         model_class=model_class, model_config=model_configs[model_class])

@@ -34,7 +34,7 @@ python netdeconf/main.py
 ### Run
 To run the experiments with the default settings and the default config (attached):
 
-## TGNN and DraGNN
+## UMGNN
 
 ```bash
 python umgn.py

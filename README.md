@@ -1,4 +1,4 @@
-# Uplift Learning under Limited Supervision
+# Uplift Modeling under Limited Supervision
 
 The code to reproduce the analysis for "Uplift Modeling under Limited Supervision".
 
